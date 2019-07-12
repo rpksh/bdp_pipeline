@@ -1,0 +1,92 @@
+pipeline {
+  agent {
+    label ${env.JENKINSAGENT_NAME}
+  }
+  parameters {
+    booleanParam(
+      name: 'VERBOSE',
+      defaultValue: false,
+      description: 'Execute the scripts in verbose mode'
+      )
+  }
+  stages {
+    stage('Load Configfile') {
+      steps {
+        load "${WORKSPACE}/${env.CONFIGFILE}"
+        load "${WORKSPACE}/jenkins/config/commons.groovy"
+      }
+    }
+    stage('git checkout of Application over ssh') {
+      when {
+        expression {
+          isNotApplicable = (env.APP_GIT_URL != "NOT-APPLICABLE")
+          def isSSH = (env.APP_GIT_URL =~ /^ssh.*/ )
+          return (isNotApplicable && isSSH)
+          }
+        }
+      steps {
+        script {
+          sh "git ls-remote -h ${APP_GIT_URL} | cut -d/ -f3- > ${WORKSPACE}/app_branch_list"
+          env.APP_BRANCH_LIST = readFile (file: "${WORKSPACE}/app_branch_list")
+          timeout(5) {
+          env.APPLICATION_BRANCH = input message: 'Select the Branch', ok: 'Select Branch',
+          parameters: [choice(name: 'APPLICATION_BRANCH', choices: env.APP_BRANCH_LIST, description: 'What is the Application Branch to Checkout?')]
+        }
+        }
+        dir(path: APP_DIR) {
+          git(url: APP_GIT_URL, branch: env.APPLICATION_BRANCH, credentialsId: env.GIT_CREDENTIALS)
+        }
+      }
+    }
+    stage('git checkout of Application over http(s)') {
+      when {
+        expression {
+          isNotApplicable = (env.APP_GIT_URL != "NOT-APPLICABLE")
+          def isHTTP = (env.APP_GIT_URL =~ /^http.*/ )
+          return (isNotApplicable && isHTTP)
+          }
+        }
+      steps {
+        script {
+          sh 'git config credential.helper "/bin/bash ' + env.WORKSPACE + '/scripts/git-credential-helper.sh"'
+          withCredentials([[
+          $class: 'UsernamePasswordMultiBinding',
+          credentialsId: env.GIT_CREDENTIALS,
+          usernameVariable: 'GIT_USERNAME',
+          passwordVariable: 'GIT_PASSWORD'
+          ]]) {
+          sh "git ls-remote -h ${MANIFEST_GIT_URL} | cut -d/ -f3- > ${WORKSPACE}/app_branch_list"
+        }
+          env.APP_BRANCH_LIST = readFile (file: "${WORKSPACE}/app_branch_list")
+          timeout(5) {
+          env.PIPELINE_BRANCH = input message: 'Select the Branch', ok: 'Select Branch',
+          parameters: [choice(name: 'PIPELINE_BRANCH', choices: env.APP_BRANCH_LIST, description: 'What is the Application Branch to Checkout?')]
+        }
+      }
+        dir(path: APP_DIR) {
+          git(url: APP_GIT_URL, branch: env.APPLICATION_BRANCH, credentialsId: GIT_CREDENTIALS)
+        }
+      }
+    }
+    stage('Application Build') {
+      steps {
+        script {
+            sh("mkdir -p ${WORKSPACE}/${ARTIFACT_DIR}")
+            sh("cd ${WORKSPACE}/${APP_DIR}/src && ./build_app.sh")
+        }
+      }
+    }
+    stage('Dockerize') {
+      steps {
+        script {
+            sh("cd ${WORKSPACE}/${CLOUD}/scripts/ && ./dockerize.sh")
+        }
+      }
+    }
+    stage('Clean Workspace') {
+      steps {
+        cleanWs()
+      }
+    }
+  }
+}
